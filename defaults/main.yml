@@ -1,0 +1,6 @@
+---
+# defaults file for ansible-role-mongoc
+user: "ubuntu"
+mongoc_is_cluster: 1
+mongoc_db: "mydb"
+mongoc_path: "{{ lookup('env', 'HOME') }}/mongo"

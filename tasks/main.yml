@@ -1,0 +1,74 @@
+---
+# tasks file for ansible-role-mongoc
+- name: Ensures mongo dir exists
+  file:
+    path: "{{ mongoc_path }}"
+    state: directory
+
+- name: insure internal network exists
+  community.docker.docker_network:
+    name: internal
+    state: present
+    ipam_config:
+      - subnet: 172.18.0.0/24
+
+# @TODO put MONGO_INITDB_ROOT_USERNAME and MONGO_INITDB_ROOT_PASSWORD in a secret file
+- name: create mongocb container
+  community.docker.docker_container:
+    name: mongoc-{{item}}-container
+    image: mongo:7.0.5
+    restart_policy: unless-stopped
+    recreate: yes
+    command: mongod --replSet rs0 --bind_ip_all
+    volumes:
+      - "{{ mongoc_path }}/data:/data"
+    ports:
+      - "2701{{item}}:27017"
+    networks:
+      - name: internal
+        ipv4_address: "172.18.0.{{item + 20}}"
+    labels:
+      traefik.enable: "false"
+  loop: "{{range(0, 3) | list}}"
+
+- name: pause 5 seconds
+  ansible.builtin.wait_for:
+    timeout: 5
+    state: started
+
+- name: init replica set
+  community.docker.docker_container_exec:
+    container: mongoc-0-container
+    command: 'mongosh admin --eval "rs.initiate({ _id: ''rs0'', members: [{ _id: 0, host: ''172.18.0.20'' }]})"'
+  when: mongoc_is_cluster == 1
+
+- name: add worker 1 to replica set
+  community.docker.docker_container_exec:
+    container: mongoc-0-container
+    command: 'mongosh admin --eval "rs.add(''172.18.0.21'')"'
+  when: mongoc_is_cluster == 1
+
+- name: add worker 2 to replica set
+  community.docker.docker_container_exec:
+    container: mongoc-0-container
+    command: 'mongosh admin --eval "rs.add(''172.18.0.22'')"'
+  when: mongoc_is_cluster == 1
+
+- name: configure nginx for mongoc
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ mongoc_path }}/nginx.conf"
+    mode: 0644
+
+- name: start nginx container with config
+  community.docker.docker_container:
+    name: nginx-container
+    image: nginx:1.21.3-alpine
+    restart_policy: unless-stopped
+    recreate: yes
+    volumes:
+      - "{{ mongoc_path }}/nginx.conf:/etc/nginx/nginx.conf"
+    ports:
+      - "80:80"
+    networks:
+      - name: internal
